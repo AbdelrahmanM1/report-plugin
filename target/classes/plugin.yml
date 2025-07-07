@@ -1,0 +1,19 @@
+name: reportsystem
+version: '1.4'
+main: me.abdelrahmanmoharramdev.reportsystem.Reportsystem
+commands:
+  report:
+    description: Report a player
+    usage: /report <player> <reason>
+  reportlist:
+    description: View recent reports
+permissions:
+  reportsystem.report:
+    description: Allows a player to use /report
+    default: true
+  reportsystem.view:
+    description: View recent reports
+    default: op
+  reportsystem.notify:
+    description: Be notified of new reports
+    default: op
