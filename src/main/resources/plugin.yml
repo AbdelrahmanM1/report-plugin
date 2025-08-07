@@ -1,19 +1,38 @@
 name: reportsystem
-version: '${project.version}'
+version: 2.1
 main: me.abdelrahmanmoharramdev.reportsystem.Reportsystem
+author: Abdelrahman Moharram
+description: A simple reporting system with GUI support for selecting players and report reasons
+
 commands:
   report:
-    description: Report a player
-    usage: /report <player> <reason>
+    description: Open GUI to report a player
+    usage: /report
+    permission: reportsystem.report
+
   reportlist:
-    description: View recent reports
+    description: View recent reports in GUI
+    usage: /reportlist
+    permission: reportsystem.view
+
+  reportreload:
+    description: Reload the ReportSystem plugin config
+    usage: /reportreload
+    permission: reportsystem.reload
+
 permissions:
   reportsystem.report:
     description: Allows a player to use /report
     default: true
+
   reportsystem.view:
-    description: View recent reports
+    description: Allows a player to view reports using /reportlist
     default: op
+
+  reportsystem.reload:
+    description: Allows reloading of the ReportSystem config using /reportreload
+    default: op
+
   reportsystem.notify:
-    description: Be notified of new reports
+    description: Receive notifications when a new report is submitted
     default: op
