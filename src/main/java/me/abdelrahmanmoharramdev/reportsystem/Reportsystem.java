@@ -1,11 +1,18 @@
 package me.abdelrahmanmoharramdev.reportsystem;
 
-import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import org.bukkit.*;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.*;
@@ -14,146 +21,194 @@ import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-public final class Reportsystem extends JavaPlugin {
+public final class Reportsystem extends JavaPlugin implements Listener {
 
     private String webhookUrl;
-
-    // Anti-spam cooldown
     private final Map<UUID, Long> reportCooldowns = new HashMap<>();
-    private final long cooldownTime = 10 * 1000; // 10 seconds (in milliseconds)
+    private final Map<UUID, String> reportTargets = new HashMap<>();
+    private final Map<UUID, Integer> guiPageTracker = new HashMap<>();
+
+    private final long cooldownTime = 10 * 1000;
+    private final int PLAYERS_PER_PAGE = 45;
+
+    private List<String> reportReasons = new ArrayList<>();
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        this.webhookUrl = getConfig().getString("webhook-url");
-
-        if (webhookUrl == null || webhookUrl.isEmpty()) {
-            getLogger().warning("Webhook URL is not set in config.yml!");
-        }
-
-        // Registering Player Quit event to clear cooldowns
-        getServer().getPluginManager().registerEvents(new org.bukkit.event.Listener() {
-            @org.bukkit.event.EventHandler
-            public void onPlayerQuit(org.bukkit.event.player.PlayerQuitEvent event) {
-                reportCooldowns.remove(event.getPlayer().getUniqueId());
-            }
-        }, this);
-
-        getLogger().info("ReportSystem Enabled");
+        loadConfigValues();
+        getServer().getPluginManager().registerEvents(this, this);
+        getLogger().info("✅ ReportSystem Enabled");
     }
 
     @Override
     public void onDisable() {
-        getLogger().info("ReportSystem Disabled");
+        getLogger().info("❌ ReportSystem Disabled");
+    }
+
+    private void loadConfigValues() {
+        FileConfiguration config = getConfig();
+        webhookUrl = config.getString("webhook-url");
+        reportReasons = config.getStringList("report-reasons");
+
+        if (reportReasons == null || reportReasons.isEmpty()) {
+            reportReasons = Arrays.asList("Cheating", "Abusive Language", "Griefing");
+        }
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (command.getName().equalsIgnoreCase("report")) {
-            return handleReportCommand(sender, args);
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
+            return true;
         }
 
-        if (command.getName().equalsIgnoreCase("reportlist")) {
-            return handleReportListCommand(sender);
+        switch (command.getName().toLowerCase()) {
+            case "report":
+                openPlayerReportGUI(player, 0);
+                return true;
+            case "reportreload":
+                reloadConfig();
+                loadConfigValues();
+                player.sendMessage(ChatColor.GREEN + "✅ ReportSystem config reloaded.");
+                return true;
         }
 
         return false;
     }
 
-    private boolean handleReportCommand(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
-            return true;
-        }
-
-        Player reporter = (Player) sender;
-
-        if (!reporter.hasPermission("reportsystem.report")) {
-            reporter.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
-            return true;
-        }
-
-        // Anti-spam: Check cooldown
+    private void openPlayerReportGUI(Player reporter, int page) {
         UUID uuid = reporter.getUniqueId();
         long now = System.currentTimeMillis();
-        if (reportCooldowns.containsKey(uuid)) {
-            long lastUsed = reportCooldowns.get(uuid);
-            if (now - lastUsed < cooldownTime) {
-                long secondsLeft = (cooldownTime - (now - lastUsed)) / 1000;
-                reporter.sendMessage(ChatColor.RED + "⏳ Please wait " + secondsLeft + " more second(s) before using /report again.");
-                return true;
-            }
-        }
-        reportCooldowns.put(uuid, now);
 
-        if (args.length < 2) {
-            reporter.sendMessage(ChatColor.RED + "Usage: /report <player> <reason>");
-            return true;
+        if (reportCooldowns.containsKey(uuid) && now - reportCooldowns.get(uuid) < cooldownTime) {
+            long secondsLeft = (cooldownTime - (now - reportCooldowns.get(uuid))) / 1000;
+            reporter.sendMessage(ChatColor.RED + "⏳ Please wait " + secondsLeft + " seconds before reporting again.");
+            return;
         }
 
-        String reportedName = args[0];
-        if (reportedName.equalsIgnoreCase(reporter.getName())) {
-            reporter.sendMessage(ChatColor.RED + "You can't report yourself.");
-            return true;
+        List<Player> players = new ArrayList<>(Bukkit.getOnlinePlayers());
+        players.remove(reporter);
+
+        int totalPages = (int) Math.ceil((double) players.size() / PLAYERS_PER_PAGE);
+        page = Math.max(0, Math.min(page, totalPages - 1));
+        guiPageTracker.put(uuid, page);
+
+        Inventory gui = Bukkit.createInventory(null, 54, ChatColor.DARK_RED + "📝 Select Player (Page " + (page + 1) + ")");
+
+        int start = page * PLAYERS_PER_PAGE;
+        int end = Math.min(start + PLAYERS_PER_PAGE, players.size());
+
+        for (int i = start; i < end; i++) {
+            Player target = players.get(i);
+            ItemStack skull = new ItemStack(Material.SKULL_ITEM, 1, (short) 3);
+            SkullMeta meta = (SkullMeta) skull.getItemMeta();
+            meta.setDisplayName(ChatColor.YELLOW + target.getName());
+            meta.setOwner(target.getName());
+            skull.setItemMeta(meta);
+            gui.setItem(i - start, skull);
         }
 
-        Player reportedPlayer = Bukkit.getPlayerExact(reportedName);
-        if (reportedPlayer == null) {
-            reporter.sendMessage(ChatColor.RED + "The player '" + reportedName + "' is not online.");
-            return true;
+        // Previous
+        if (page > 0) {
+            ItemStack prev = new ItemStack(Material.ARROW);
+            ItemMeta meta = prev.getItemMeta();
+            meta.setDisplayName(ChatColor.GREEN + "⬅ Previous Page");
+            prev.setItemMeta(meta);
+            gui.setItem(45, prev);
         }
 
-        String reason = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
-        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+        // Next
+        if (page < totalPages - 1) {
+            ItemStack next = new ItemStack(Material.ARROW);
+            ItemMeta meta = next.getItemMeta();
+            meta.setDisplayName(ChatColor.GREEN + "➡ Next Page");
+            next.setItemMeta(meta);
+            gui.setItem(53, next);
+        }
 
-        reporter.sendMessage(ChatColor.GREEN + "✅ Report submitted.");
-
-        sendToWebhook(reporter.getName(), reportedName, reason, time);
-        logToFile(time, reporter.getName(), reportedName, reason);
-        notifyModerators(reporter.getName(), reportedName, reason);
-
-        return true;
+        reporter.openInventory(gui);
     }
 
-    private boolean handleReportListCommand(CommandSender sender) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
-            return true;
+    private void openReasonGUI(Player reporter, String targetName) {
+        Inventory gui = Bukkit.createInventory(null, 27, ChatColor.DARK_RED + "📝 Reason for " + targetName);
+
+        for (int i = 0; i < reportReasons.size(); i++) {
+            String reason = reportReasons.get(i);
+            ItemStack item = new ItemStack(Material.PAPER);
+            ItemMeta meta = item.getItemMeta();
+            meta.setDisplayName(ChatColor.RED + reason);
+            item.setItemMeta(meta);
+            gui.setItem(i, item);
         }
 
-        Player player = (Player) sender;
-        if (!player.isOp() && !player.hasPermission("reportsystem.view")) {
-            player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
-            return true;
-        }
+        reporter.openInventory(gui);
+    }
 
-        File logFile = new File(getDataFolder(), "reports.log");
-        if (!logFile.exists()) {
-            player.sendMessage(ChatColor.YELLOW + "No reports have been logged yet.");
-            return true;
-        }
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        Player clicker = (Player) event.getWhoClicked();
+        ItemStack clicked = event.getCurrentItem();
+        String title = event.getView().getTitle();
+        event.setCancelled(true);
 
-        try {
-            List<String> lines = new ArrayList<>();
-            BufferedReader reader = new BufferedReader(new FileReader(logFile));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                lines.add(line);
+        if (clicked == null || !clicked.hasItemMeta()) return;
+
+        String display = ChatColor.stripColor(clicked.getItemMeta().getDisplayName());
+
+        if (title.contains("📝 Select Player")) {
+            if (display.equals("⬅ Previous Page")) {
+                int page = guiPageTracker.getOrDefault(clicker.getUniqueId(), 0);
+                openPlayerReportGUI(clicker, page - 1);
+                return;
             }
-            reader.close();
 
-            int count = 0;
-            player.sendMessage(ChatColor.AQUA + "Recent Reports:");
-            for (int i = lines.size() - 1; i >= 0 && count < 5; i--, count++) {
-                player.sendMessage(ChatColor.GRAY + "- " + lines.get(i));
+            if (display.equals("➡ Next Page")) {
+                int page = guiPageTracker.getOrDefault(clicker.getUniqueId(), 0);
+                openPlayerReportGUI(clicker, page + 1);
+                return;
             }
 
-        } catch (IOException e) {
-            player.sendMessage(ChatColor.RED + "Failed to read the report log.");
-            e.printStackTrace();
+            if (display.equals(clicker.getName())) {
+                clicker.sendMessage(ChatColor.RED + "❌ You can't report yourself.");
+                clicker.closeInventory();
+                return;
+            }
+
+            reportTargets.put(clicker.getUniqueId(), display);
+            openReasonGUI(clicker, display);
         }
 
-        return true;
+        else if (title.contains("📝 Reason for")) {
+            String reason = display;
+            UUID uuid = clicker.getUniqueId();
+
+            if (!reportTargets.containsKey(uuid)) {
+                clicker.sendMessage(ChatColor.RED + "❌ No target selected.");
+                clicker.closeInventory();
+                return;
+            }
+
+            String reported = reportTargets.remove(uuid);
+            String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+
+            reportCooldowns.put(uuid, System.currentTimeMillis());
+            clicker.sendMessage(ChatColor.GREEN + "✅ Report submitted.");
+
+            sendToWebhook(clicker.getName(), reported, reason, time);
+            logToFile(time, clicker.getName(), reported, reason);
+            notifyModerators(clicker.getName(), reported, reason);
+
+            clicker.closeInventory();
+        }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        UUID uuid = event.getPlayer().getUniqueId();
+        reportTargets.remove(uuid);
+        reportCooldowns.remove(uuid);
+        guiPageTracker.remove(uuid);
     }
 
     private void sendToWebhook(String reporter, String reported, String reason, String time) {
@@ -161,13 +216,13 @@ public final class Reportsystem extends JavaPlugin {
 
         String json = "{"
                 + "\"embeds\": [{"
-                + "\"title\": \"🚨 New Player Report\","
+                + "\"title\": \"🚨 New Report\","
                 + "\"color\": 15158332,"
                 + "\"fields\": ["
-                + "  {\"name\": \"📅 Time\", \"value\": \"" + time + "\", \"inline\": true},"
-                + "  {\"name\": \"👤 Reporter\", \"value\": \"" + reporter + "\", \"inline\": true},"
-                + "  {\"name\": \"🔴 Reported\", \"value\": \"" + reported + "\", \"inline\": true},"
-                + "  {\"name\": \"📝 Reason\", \"value\": \"" + reason + "\"}"
+                + "{\"name\": \"📅 Time\", \"value\": \"" + time + "\", \"inline\": true},"
+                + "{\"name\": \"👤 Reporter\", \"value\": \"" + reporter + "\", \"inline\": true},"
+                + "{\"name\": \"🔴 Reported\", \"value\": \"" + reported + "\", \"inline\": true},"
+                + "{\"name\": \"📝 Reason\", \"value\": \"" + reason + "\"}"
                 + "]"
                 + "}]"
                 + "}";
@@ -188,7 +243,7 @@ public final class Reportsystem extends JavaPlugin {
                 connection.getResponseCode();
                 connection.disconnect();
             } catch (Exception e) {
-                getLogger().warning("Failed to send embed to Discord webhook.");
+                getLogger().warning("Failed to send to Discord webhook.");
                 e.printStackTrace();
             }
         });
