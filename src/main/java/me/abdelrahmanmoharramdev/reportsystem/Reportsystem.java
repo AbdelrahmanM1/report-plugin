@@ -8,6 +8,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -15,7 +16,8 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.*;
+import java.io.FileWriter;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.SimpleDateFormat;
@@ -27,6 +29,7 @@ public final class Reportsystem extends JavaPlugin implements Listener {
     private final Map<UUID, Long> reportCooldowns = new HashMap<>();
     private final Map<UUID, String> reportTargets = new HashMap<>();
     private final Map<UUID, Integer> guiPageTracker = new HashMap<>();
+    private final Set<UUID> searchingPlayers = new HashSet<>();
 
     private final long cooldownTime = 10 * 1000;
     private final int PLAYERS_PER_PAGE = 45;
@@ -118,6 +121,13 @@ public final class Reportsystem extends JavaPlugin implements Listener {
             gui.setItem(45, prev);
         }
 
+        // Search button
+        ItemStack search = new ItemStack(Material.COMPASS);
+        ItemMeta searchMeta = search.getItemMeta();
+        searchMeta.setDisplayName(ChatColor.AQUA + "🔍 Search Player");
+        search.setItemMeta(searchMeta);
+        gui.setItem(49, search);
+
         // Next
         if (page < totalPages - 1) {
             ItemStack next = new ItemStack(Material.ARROW);
@@ -169,6 +179,13 @@ public final class Reportsystem extends JavaPlugin implements Listener {
                 return;
             }
 
+            if (display.equals("🔍 Search Player")) {
+                clicker.closeInventory();
+                searchingPlayers.add(clicker.getUniqueId());
+                clicker.sendMessage(ChatColor.AQUA + "Type the player's name in chat to report them. Type 'cancel' to stop.");
+                return;
+            }
+
             if (display.equals(clicker.getName())) {
                 clicker.sendMessage(ChatColor.RED + "❌ You can't report yourself.");
                 clicker.closeInventory();
@@ -204,11 +221,42 @@ public final class Reportsystem extends JavaPlugin implements Listener {
     }
 
     @EventHandler
+    public void onPlayerChat(AsyncPlayerChatEvent event) {
+        Player player = event.getPlayer();
+        if (!searchingPlayers.contains(player.getUniqueId())) return;
+
+        event.setCancelled(true);
+        String msg = event.getMessage().trim();
+
+        if (msg.equalsIgnoreCase("cancel")) {
+            player.sendMessage(ChatColor.RED + "Search cancelled.");
+            searchingPlayers.remove(player.getUniqueId());
+            return;
+        }
+
+        Player target = Bukkit.getPlayerExact(msg);
+        if (target == null) {
+            player.sendMessage(ChatColor.RED + "❌ Player not found.");
+            return;
+        }
+        if (target.getName().equalsIgnoreCase(player.getName())) {
+            player.sendMessage(ChatColor.RED + "❌ You can't report yourself.");
+            return;
+        }
+
+        searchingPlayers.remove(player.getUniqueId());
+        reportTargets.put(player.getUniqueId(), target.getName());
+
+        Bukkit.getScheduler().runTask(this, () -> openReasonGUI(player, target.getName()));
+    }
+
+    @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
         reportTargets.remove(uuid);
         reportCooldowns.remove(uuid);
         guiPageTracker.remove(uuid);
+        searchingPlayers.remove(uuid);
     }
 
     private void sendToWebhook(String reporter, String reported, String reason, String time) {
